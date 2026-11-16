@@ -47,3 +47,23 @@ class MetricRevision(Base):
     check_result: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False)
     __table_args__ = (UniqueConstraint("connection_id", "metric_id", "revision"),)
+
+
+class Chat(Base):
+    __tablename__ = 'chats'
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    connection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('connections.id', ondelete='CASCADE'), nullable=False, index=True)
+    last_intent: Mapped[dict | None] = mapped_column(JSONB)
+    pending_metric: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False)
+
+
+class QueryRun(Base):
+    __tablename__ = 'query_runs'
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chat_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('chats.id', ondelete='CASCADE'), nullable=False, index=True)
+    metric_revision_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('metric_revisions.id'), nullable=False)
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('schema_snapshots.id'), nullable=False)
+    intent: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False)

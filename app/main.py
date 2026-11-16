@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.connections import router as connections_router
+from app.api.chats import router as chats_router
 from app.api.health import router as health_router
 from app.api.onboarding import router as onboarding_router
 from app.core.settings import Settings
@@ -18,6 +19,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(health_router)
     application.include_router(connections_router)
     application.include_router(onboarding_router)
+    application.include_router(chats_router)
 
     @application.get("/", include_in_schema=False)
     def onboarding_page():

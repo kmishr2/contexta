@@ -91,3 +91,18 @@ After discovering a connection, `POST /connections/{id}/onboarding/messages` giv
 This first slice supports counts and sums on a single discovered table or view, a DATE column, and an optional fixed equality filter. It does not yet support joins, multiple fact sources, average, ratios, time zones, or a full conversational UI. Define currencies and units explicitly: the system cannot infer whether a monetary column combines currencies. For the commerce fixture, the `billing.revenue_events` view can be summed with `event_date` and a fixed `currency` filter; January 2025 USD is 100. Product allocation is not defined. An owner must review the meaning of each definition and reference result.
 
 A rescan marks a table-based definition stale when its discovered source object changes or becomes unreadable, while unrelated table definitions remain available. View-based definitions are conservatively marked stale on any catalog change until view dependencies can be tracked. When a rescan detects lost schema access, definitions in that schema and view definitions are marked stale even though the scan fails. Changes to dependencies outside the discovered catalog may not be detected. Stale revisions stay stale even if the source is restored; save and verify a new revision. Run a rescan after source changes. A source change made without a rescan is not automatically detected, so this prototype is not ready for production or real data.
+
+
+## Local analytics chat
+
+After publishing a metric, use the **Ask** section on the local page. The deterministic interpreter deliberately accepts only these forms:
+
+```text
+metric revenue_usd from 2025-01-01 to 2025-02-01
+metric revenue_usd
+from 2025-02-01 to 2025-03-01
+```
+
+Dates are half-open: the start is included and the end excluded. The second form asks for dates; the third uses that pending metric or the previous successful metric in the same chat. Only ready, non-stale metrics for the chat's connection are queried. Results include the metric revision, dates, data status and SQL with bound values omitted. Sums with no rows return null; counts can return zero and are labeled `no_matching_rows`. A source with rows but no non-null values is labeled `missing_values`.
+
+This is a deliberately limited local prototype, not a general natural-language interface: breakdowns, relative periods, multiple metrics, real identity and analyst permissions are not implemented. An owner must have already checked currency, filters and source meaning. The browser's chat transcript is not restored on reload; accepted query intents and metric/snapshot versions are stored for provenance, but messages and result rows are not. Existing local setups need `alembic upgrade head` before using chat. Continue to use disposable data only.
