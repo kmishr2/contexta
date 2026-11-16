@@ -1,19 +1,32 @@
-from sqlalchemy import Column, MetaData, Table, func, select, text
+import json
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
+
+from sqlalchemy import text
+from app.analytics.compiler import build_metric_query
 from app.sources.postgres.discovery import source_engine
+
+MAX_ROWS = 100
+MAX_BYTES = 256 * 1024
+
+
+class ResultTooLarge(Exception):
+    pass
+
+
+def normalize_dimension(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value)
 
 
 def execute_metric(record, settings, definition, intent):
-    names = {definition.date_column}
-    if definition.value_column:
-        names.add(definition.value_column)
-    if definition.filter_column:
-        names.add(definition.filter_column)
-    relation = Table(definition.relation, MetaData(), *(Column(n) for n in sorted(names)), schema=definition.schema_name)
-    aggregate = func.count() if definition.aggregate == 'count' else func.sum(relation.c[definition.value_column])
-    value_count = func.count(relation.c[definition.value_column]) if definition.value_column else func.count()
-    stmt = select(aggregate, func.count(), value_count).select_from(relation).where(relation.c[definition.date_column] >= intent.start, relation.c[definition.date_column] < intent.end)
-    if definition.filter_column:
-        stmt = stmt.where(relation.c[definition.filter_column] == definition.filter_value)
+    dimensions = getattr(intent, 'dimensions', []) or []
+    stmt = build_metric_query(definition, intent.start, intent.end, dimensions, MAX_ROWS)
     engine = source_engine(record, settings)
     try:
         with engine.connect() as conn:
@@ -22,9 +35,38 @@ def execute_metric(record, settings, definition, intent):
                 conn.execute(text("SET LOCAL statement_timeout = '5s'"))
                 conn.execute(text("SET LOCAL lock_timeout = '1s'"))
                 conn.execute(text('SET LOCAL search_path = pg_catalog'))
-                value, matched, populated = conn.execute(stmt).one()
-                status = 'no_matching_rows' if matched == 0 else ('missing_values' if definition.value_column and populated == 0 else 'value')
-                return {'value': str(value) if value is not None else None, 'data_status': status,
-                        'sql': str(stmt.compile(dialect=conn.dialect))}
+                cursor = conn.execute(stmt)
+                rows = cursor.fetchmany(MAX_ROWS + 1) if dimensions else [cursor.one()]
+                truncated = len(rows) > MAX_ROWS
+                output = []
+                for row in rows[:MAX_ROWS]:
+                    value, matched, populated = row[:3]
+                    denominator, denominator_count = row[3:5] if definition.aggregate == 'ratio' else (None, None)
+                    if matched == 0:
+                        status = 'no_matching_rows'
+                    elif populated == 0 or (denominator_count is not None and denominator_count == 0):
+                        status = 'missing_values'
+                    elif definition.aggregate == 'ratio' and denominator == 0:
+                        status = 'zero_denominator'
+                    elif populated < matched or (denominator_count is not None and denominator_count < matched):
+                        status = 'partial_values'
+                    else:
+                        status = 'value'
+                    if value is not None:
+                        try:
+                            if not Decimal(str(value)).is_finite():
+                                value, status = None, 'non_finite'
+                        except InvalidOperation:
+                            value, status = None, 'non_finite'
+                    item = {'value': str(value) if value is not None else None, 'data_status': status}
+                    if dimensions:
+                        item['dimension'] = normalize_dimension(row[-1])
+                    output.append(item)
+                    if len(json.dumps(output, ensure_ascii=True).encode('utf-8')) > MAX_BYTES:
+                        raise ResultTooLarge('Result exceeds byte limit')
+                sql = str(stmt.compile(dialect=conn.dialect))
+                if dimensions:
+                    return {'groups': output, 'truncated': truncated, 'sql': sql}
+                return {**output[0], 'sql': sql}
     finally:
         engine.dispose()
