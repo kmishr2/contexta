@@ -80,10 +80,12 @@ python -m pytest
 
 The integration test changes a fixture column and grant temporarily; never point it at a real database. Without those two test URLs it is skipped. It expects the fixture and migration above, port 55439, and the example password. The metadata and source databases use separate connections and roles; use independent deployment credentials outside this disposable fixture.
 
-## Semantic onboarding (initial API)
+## Semantic onboarding (local prototype)
+
+Open `http://127.0.0.1:8000/` to select a previously registered connection, discover its catalog, save a draft, run a reference check, and publish. The screen is local-only and does not yet restore drafts across browser reloads.
 
 After discovering a connection, `POST /connections/{id}/onboarding/messages` gives deterministic, unapproved name-based suggestions. `PUT /connections/{id}/metrics/{metric_id}/draft` creates a revision; `POST .../verify` checks it against a fixed half-open date range and expected value, and `POST .../publish` publishes the latest passing revision. `GET .../revisions/{revision}` shows its definition, check, and status. The API documentation at `/docs` describes the fields.
 
-This first slice supports counts and sums on a single discovered table or view, a DATE column, and an optional fixed equality filter. It does not yet support joins, multiple fact sources, average, ratios, time zones, or a review UI. Define currencies and units explicitly: the system cannot infer whether a monetary column combines currencies. For the commerce fixture, the `billing.revenue_events` view can be summed with `event_date` and a fixed `currency` filter; January 2025 USD is 100. Product allocation is not defined. An owner must review the meaning of each definition and reference result.
+This first slice supports counts and sums on a single discovered table or view, a DATE column, and an optional fixed equality filter. It does not yet support joins, multiple fact sources, average, ratios, time zones, or a full conversational UI. Define currencies and units explicitly: the system cannot infer whether a monetary column combines currencies. For the commerce fixture, the `billing.revenue_events` view can be summed with `event_date` and a fixed `currency` filter; January 2025 USD is 100. Product allocation is not defined. An owner must review the meaning of each definition and reference result.
 
 A rescan that changes any catalog fingerprint conservatively makes prior definitions stale for publication and review; affected-only invalidation is not implemented. Run a rescan after source changes. A source change made without a rescan is not automatically detected, so this prototype is not ready for production or real data.

@@ -64,6 +64,12 @@ def safe_source(record, settings, discover):
         raise HTTPException(503, detail={"code": "source_unavailable", "message": "Source access or scope verification failed"}) from None
 
 
+@router.get("/connections")
+def list_connections(session: Annotated[Session, Depends(metadata_session)]):
+    records = session.scalars(select(ConnectionRecord).order_by(ConnectionRecord.label, ConnectionRecord.id)).all()
+    return [{"id": r.id, "label": r.label, "schemas": r.schemas} for r in records]
+
+
 @router.post("/connections", status_code=201)
 def register(body: ConnectionInput, settings: Annotated[Settings, Depends(owner)], session: Annotated[Session, Depends(metadata_session)]):
     if f"{body.host}:{body.port}" not in settings.allowed_destinations:

@@ -1,7 +1,8 @@
 import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.connections import router as connections_router
@@ -17,6 +18,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(health_router)
     application.include_router(connections_router)
     application.include_router(onboarding_router)
+
+    @application.get("/", include_in_schema=False)
+    def onboarding_page():
+        return FileResponse(Path(__file__).parent / "web" / "index.html")
 
     @application.middleware("http")
     async def request_id(request: Request, call_next):
