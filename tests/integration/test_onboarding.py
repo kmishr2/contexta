@@ -1,6 +1,7 @@
 import os
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, text
 from app.core.settings import Settings
 from app.main import create_app
 
@@ -17,7 +18,9 @@ def test_owner_draft_verify_publish_and_stale(monkeypatch):
         cid = client.post('/connections', json=source).json()['id']
         prefix = f'/connections/{cid}'
         assert client.post(prefix + '/discover').status_code == 200
-        assert client.post(prefix + '/onboarding/messages', json={'message': 'revenue'}).json()['suggestions']
+        suggestions = client.post(prefix + '/onboarding/messages', json={'message': 'What were revenue events last month?'}).json()['suggestions']
+        assert suggestions[0] == {'schema': 'billing', 'relation': 'revenue_events', 'matched_terms': ['event', 'revenue']}
+        assert client.post(prefix + '/onboarding/messages', json={'message': 'secret'}).json()['suggestions'] == []
         metric = prefix + '/metrics/revenue'
         draft = client.put(metric + '/draft', json=definition)
         assert draft.status_code == 201, draft.text
@@ -36,3 +39,25 @@ def test_owner_draft_verify_publish_and_stale(monkeypatch):
         check['revision'] = 2
         assert client.post(metric + '/verify', json=check).json()['check']['passed']
         assert client.post(metric + '/publish', json={'revision': 2}).json()['state'] == 'ready'
+        revisions = client.get(prefix + '/metrics').json()['revisions']
+        assert [(r['revision'], r['state']) for r in revisions] == [(2, 'ready'), (1, 'superseded')]
+        assert client.get(metric + '/revisions/2').json()['check']['passed']
+        other_id = client.post('/connections', json=source).json()['id']
+        other = f'/connections/{other_id}'
+        assert client.post(other + '/discover').status_code == 200
+        assert client.get(other + '/metrics').json()['revisions'] == []
+        assert client.get(other + '/metrics/revenue/revisions/2').status_code == 404
+        assert client.put(metric + '/draft', json=definition).json()['revision'] == 3
+        admin = create_engine(os.environ['CONTEXA_TEST_SOURCE_ADMIN_URL'])
+        try:
+            with admin.begin() as conn:
+                conn.execute(text('ALTER TABLE sales.orders ADD COLUMN onboarding_drift integer'))
+            assert client.post(prefix + '/discover').status_code == 200
+            assert client.get(metric + '/revisions/3').json()['state'] == 'stale'
+            assert client.get(prefix + '/metrics').json()['revisions'][0]['state'] == 'stale'
+            check['revision'] = 3
+            assert client.post(metric + '/verify', json=check).status_code == 409
+        finally:
+            with admin.begin() as conn:
+                conn.execute(text('ALTER TABLE sales.orders DROP COLUMN IF EXISTS onboarding_drift'))
+            admin.dispose()

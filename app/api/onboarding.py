@@ -11,6 +11,7 @@ from app.api.connections import get_record, metadata_session, owner
 from app.catalog.models import ConnectionRecord, MetricRevision, SchemaSnapshot
 from app.core.settings import Settings
 from app.onboarding.metrics import Definition, ReferenceCheck, run_check, validate_definition
+from app.onboarding.suggestions import suggest_sources
 from app.sources.postgres.discovery import SourcePolicyError
 
 router = APIRouter()
@@ -65,8 +66,7 @@ class Verification(ReferenceCheck):
 def suggest(connection_id: uuid.UUID, body: Message, session: Annotated[Session, Depends(metadata_session)]):
     get_record(session, connection_id)
     snapshot = latest_snapshot(session, connection_id)
-    words = set(body.message.lower().split())
-    matches = [dict(schema=o['schema'], relation=o['name']) for o in snapshot.catalog['objects'] if words.intersection(o['name'].lower().replace('_', ' ').split())][:10]
+    matches = suggest_sources(body.message, snapshot.catalog)
     return {'suggestions': matches, 'question': 'Which source represents the metric, and which date and amount columns should it use?', 'note': 'Suggestions are unapproved; confirm all business rules before publication.'}
 
 
@@ -119,10 +119,28 @@ def publish(connection_id: uuid.UUID, metric_id: str, body: ExpectedRevision, se
     return {'metric_id': metric_id, 'revision': metric.revision, 'state': metric.state, 'definition': metric.definition}
 
 
+@router.get('/connections/{connection_id}/metrics')
+def list_revisions(connection_id: uuid.UUID, session: Annotated[Session, Depends(metadata_session)]):
+    get_record(session, connection_id)
+    snapshot = latest_snapshot(session, connection_id)
+    rows = session.execute(
+        select(MetricRevision, SchemaSnapshot.fingerprint)
+        .join(SchemaSnapshot, MetricRevision.snapshot_id == SchemaSnapshot.id)
+        .where(MetricRevision.connection_id == connection_id)
+        .order_by(MetricRevision.metric_id, MetricRevision.revision.desc())
+        .limit(501)
+    ).all()
+    return {'revisions': [
+        {'metric_id': metric.metric_id, 'revision': metric.revision,
+         'name': metric.definition.get('name', metric.metric_id),
+         'state': 'stale' if metric.state in ('draft', 'in_review', 'ready') and fingerprint != snapshot.fingerprint else metric.state}
+        for metric, fingerprint in rows[:500]], 'truncated': len(rows) > 500}
+
+
 @router.get('/connections/{connection_id}/metrics/{metric_id}/revisions/{revision}')
 def review(connection_id: uuid.UUID, metric_id: str, revision: int, session: Annotated[Session, Depends(metadata_session)]):
     get_record(session, connection_id)
     metric = revision_for(session, connection_id, metric_id, revision)
     latest = latest_snapshot(session, connection_id)
     reviewed = session.get(SchemaSnapshot, metric.snapshot_id)
-    return {'metric_id': metric_id, 'revision': metric.revision, 'state': 'stale' if metric.state == 'ready' and latest.fingerprint != reviewed.fingerprint else metric.state, 'definition': metric.definition, 'check': metric.check_result}
+    return {'metric_id': metric_id, 'revision': metric.revision, 'state': 'stale' if metric.state in ('draft', 'in_review', 'ready') and latest.fingerprint != reviewed.fingerprint else metric.state, 'definition': metric.definition, 'check': metric.check_result}

@@ -82,7 +82,9 @@ The integration test changes a fixture column and grant temporarily; never point
 
 ## Semantic onboarding (local prototype)
 
-Open `http://127.0.0.1:8000/` to select a previously registered connection, discover its catalog, save a draft, run a reference check, and publish. The screen is local-only and does not yet restore drafts across browser reloads.
+Open `http://127.0.0.1:8000/` to select a previously registered connection, discover its catalog, save a draft, run a reference check, and publish. The screen is local-only. Select a connection and saved revision to resume work after a reload.
+
+The question box suggests sources by matching words in relation names; it does not interpret the question or infer business meaning. Suggestions are limited to the current catalog and require owner review.
 
 After discovering a connection, `POST /connections/{id}/onboarding/messages` gives deterministic, unapproved name-based suggestions. `PUT /connections/{id}/metrics/{metric_id}/draft` creates a revision; `POST .../verify` checks it against a fixed half-open date range and expected value, and `POST .../publish` publishes the latest passing revision. `GET .../revisions/{revision}` shows its definition, check, and status. The API documentation at `/docs` describes the fields.
 
