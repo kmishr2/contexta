@@ -1,6 +1,6 @@
 # Contexta
 
-Contexta is a planned PostgreSQL onboarding and analytics chat application. This bootstrap provides an independent liveness endpoint and a local PostgreSQL service; it does not yet connect the application to a database.
+Contexta is a planned PostgreSQL onboarding and analytics chat application. The current implementation provides a liveness endpoint, a local PostgreSQL service, and development-only connection discovery.
 
 ## Requirements
 
@@ -37,4 +37,45 @@ python -m pytest
 
 Direct application, test, and build dependencies are pinned in `pyproject.toml` for repeatable installs. Transitive dependencies and the Docker image digest are not locked, so installs are not fully reproducible; introduce a lock file and image digest before production use.
 
-Phase 2 starts with app-owned metadata migrations, connection policies and credential references, followed by scoped PostgreSQL discovery and integration tests.
+Phase 3 will add semantic onboarding and approved business definitions.
+
+## Phase 2: local discovery
+
+Connection APIs are disabled by default. `CONTEXA_DEVELOPMENT_OWNER=true` gives every caller owner access: use it only on a trusted local machine, bind the API to loopback, and never expose it to a network. Real authentication, analyst grants, and subject-area authorization are not implemented. The server stores a credential **reference** and resolves its password from an environment variable whose name begins `CONTEXA_SOURCE_`; never submit a password in the API. Destination host/port pairs are explicitly allowlisted, and the policy is rechecked on every source connection. TLS uses `verify-full` and requires `CONTEXA_SOURCE_SSLROOTCERT`, except when `CONTEXA_ALLOW_INSECURE_LOCAL_SOURCES=true` is explicitly set for a loopback host. Actual source privileges remain the database operator's responsibility.
+
+The following uses a fresh, disposable Compose volume and the example credentials. The commerce seed creates a database role and must only be run once on an isolated cluster:
+
+```sh
+cp .env.example .env
+POSTGRES_PORT=55439 docker compose up -d
+POSTGRES_PORT=55439 docker compose exec postgres createdb -U contexta contexta_source_test
+POSTGRES_PORT=55439 docker compose exec -T postgres psql -U contexta -d contexta_source_test -v ON_ERROR_STOP=1 < scripts/commerce.sql
+export CONTEXA_METADATA_URL='postgresql+psycopg://contexta:local-development-only@127.0.0.1:55439/contexta'
+export CONTEXA_DEVELOPMENT_OWNER=true
+export CONTEXA_ALLOWED_DESTINATIONS='["127.0.0.1:55439"]'
+export CONTEXA_ALLOW_INSECURE_LOCAL_SOURCES=true
+export CONTEXA_SOURCE_COMMERCE=local-reader-only
+alembic upgrade head
+uvicorn app.main:app --host 127.0.0.1
+```
+
+Register the fixture and use its returned ID to verify and discover it:
+
+```sh
+curl -X POST http://127.0.0.1:8000/connections -H 'Content-Type: application/json' -d '{"label":"Commerce","host":"127.0.0.1","port":55439,"database":"contexta_source_test","username":"contexta_reader","credential_ref":"CONTEXA_SOURCE_COMMERCE","schemas":["sales","billing"]}'
+curl -X POST http://127.0.0.1:8000/connections/CONNECTION_ID/verify
+curl -X POST http://127.0.0.1:8000/connections/CONNECTION_ID/discover
+curl http://127.0.0.1:8000/connections/CONNECTION_ID/catalog
+```
+
+Discovery reads schema metadata, not rows. It records only relations with schema usage and table-level `SELECT` for the runtime reader; schemas without usage fail verification. Rescans add snapshots and report whether their normalized fingerprint changed. Semantic definitions and selective invalidation arrive in later phases. Snapshot contents may include database comments and should be treated as sensitive metadata.
+
+To run PostgreSQL integration tests on that disposable setup, with the API stopped:
+
+```sh
+export CONTEXA_TEST_METADATA_URL="$CONTEXA_METADATA_URL"
+export CONTEXA_TEST_SOURCE_ADMIN_URL='postgresql+psycopg://contexta:local-development-only@127.0.0.1:55439/contexta_source_test'
+python -m pytest
+```
+
+The integration test changes a fixture column and grant temporarily; never point it at a real database. Without those two test URLs it is skipped. It expects the fixture and migration above, port 55439, and the example password. The metadata and source databases use separate connections and roles; use independent deployment credentials outside this disposable fixture.
