@@ -61,3 +61,55 @@ def test_owner_draft_verify_publish_and_stale(monkeypatch):
             with admin.begin() as conn:
                 conn.execute(text('ALTER TABLE sales.orders DROP COLUMN IF EXISTS onboarding_drift'))
             admin.dispose()
+
+
+def test_selective_drift_and_persistent_invalidation(monkeypatch):
+    monkeypatch.setenv('CONTEXA_SOURCE_TEST', 'local-reader-only')
+    settings = Settings(development_owner=True, metadata_url=META, allowed_destinations=['127.0.0.1:55439'], allow_insecure_local_sources=True)
+    source = {'label': 'Drift test', 'host': '127.0.0.1', 'port': 55439, 'database': 'contexta_source_test', 'username': 'contexta_reader', 'credential_ref': 'CONTEXA_SOURCE_TEST', 'schemas': ['sales', 'billing']}
+    check = {'revision': 1, 'start': '2025-01-01', 'end': '2025-02-01', 'expected': '2', 'provenance': 'fixture orders'}
+    admin = create_engine(os.environ['CONTEXA_TEST_SOURCE_ADMIN_URL'])
+    try:
+        with TestClient(create_app(settings)) as client:
+            cid = client.post('/connections', json=source).json()['id']
+            base = f'/connections/{cid}'
+            assert client.post(base + '/discover').status_code == 200
+            sales = {'name': 'Orders', 'schema_name': 'sales', 'relation': 'orders', 'aggregate': 'count', 'date_column': 'created_at'}
+            payments = {'name': 'Payments', 'schema_name': 'billing', 'relation': 'payment_attempts', 'aggregate': 'count', 'date_column': 'captured_at'}
+            for key, definition in [('orders', sales), ('payments', payments)]:
+                assert client.put(base + '/metrics/' + key + '/draft', json=definition).status_code == 201
+                assert client.post(base + '/metrics/' + key + '/verify', json=check).json()['check']['passed']
+                assert client.post(base + '/metrics/' + key + '/publish', json={'revision': 1}).status_code == 200
+            # A replacement draft does not remove the existing published revision.
+            assert client.put(base + '/metrics/payments/draft', json=payments).status_code == 201
+            with admin.begin() as conn:
+                conn.execute(text('ALTER TABLE sales.orders ADD COLUMN selective_test integer'))
+            assert client.post(base + '/discover').status_code == 200
+            assert client.get(base + '/metrics/orders/revisions/1').json()['state'] == 'stale'
+            assert client.get(base + '/metrics/payments/revisions/1').json()['state'] == 'ready'
+            assert client.get(base + '/metrics/payments/revisions/2').json()['state'] == 'draft'
+            assert client.post(base + '/metrics/payments/verify', json={**check, 'revision': 2}).json()['check']['passed']
+            with admin.begin() as conn:
+                conn.execute(text('ALTER TABLE sales.orders DROP COLUMN selective_test'))
+                conn.execute(text('REVOKE SELECT ON billing.payment_attempts FROM contexta_reader'))
+            assert client.post(base + '/discover').status_code == 200
+            assert client.get(base + '/metrics/orders/revisions/1').json()['state'] == 'stale'
+            assert client.get(base + '/metrics/payments/revisions/1').json()['state'] == 'stale'
+            assert client.post(base + '/metrics/payments/publish', json={'revision': 2}).status_code == 409
+            with admin.begin() as conn:
+                conn.execute(text('GRANT SELECT ON billing.payment_attempts TO contexta_reader'))
+            assert client.post(base + '/discover').status_code == 200
+            assert client.get(base + '/metrics/payments/revisions/1').json()['state'] == 'stale'
+            assert client.put(base + '/metrics/payments/draft', json=payments).status_code == 201
+            assert client.post(base + '/metrics/payments/verify', json={**check, 'revision': 3}).json()['check']['passed']
+            assert client.post(base + '/metrics/payments/publish', json={'revision': 3}).status_code == 200
+            with admin.begin() as conn:
+                conn.execute(text('REVOKE USAGE ON SCHEMA billing FROM contexta_reader'))
+            assert client.post(base + '/discover').status_code == 503
+            assert client.get(base + '/metrics/payments/revisions/3').json()['state'] == 'stale'
+    finally:
+        with admin.begin() as conn:
+            conn.execute(text('ALTER TABLE sales.orders DROP COLUMN IF EXISTS selective_test'))
+            conn.execute(text('GRANT SELECT ON billing.payment_attempts TO contexta_reader'))
+            conn.execute(text('GRANT USAGE ON SCHEMA billing TO contexta_reader'))
+        admin.dispose()

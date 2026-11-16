@@ -8,9 +8,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
-from app.catalog.models import ConnectionRecord, SchemaSnapshot
+from app.catalog.models import ConnectionRecord, MetricRevision, SchemaSnapshot
+from app.onboarding.drift import source_changed
 from app.core.settings import Settings
-from app.sources.postgres.discovery import SourcePolicyError, inspect_source
+from app.sources.postgres.discovery import ScopeAccessError, SourcePolicyError, inspect_source
 
 router = APIRouter()
 
@@ -90,8 +91,33 @@ def discover(connection_id: uuid.UUID, settings: Annotated[Settings, Depends(own
     record = session.scalar(select(ConnectionRecord).where(ConnectionRecord.id == connection_id).with_for_update())
     if record is None:
         raise HTTPException(404, detail={"code": "connection_not_found", "message": "Connection not found"})
-    catalog, fingerprint = safe_source(record, settings, True)
+    try:
+        catalog, fingerprint = inspect_source(record, settings, discover=True)
+    except ScopeAccessError as exc:
+        # Schema access is known to be lost. Invalidate definitions in that
+        # schema and views, whose dependency graph is not yet available.
+        active = session.execute(select(MetricRevision, SchemaSnapshot.catalog)
+            .join(SchemaSnapshot, MetricRevision.snapshot_id == SchemaSnapshot.id)
+            .where(MetricRevision.connection_id == connection_id,
+                   MetricRevision.state.in_(['draft', 'in_review', 'ready']))).all()
+        for metric, reviewed in active:
+            obj = next((o for o in reviewed.get('objects', []) if o['schema'] == metric.definition.get('schema_name') and o['name'] == metric.definition.get('relation')), None)
+            if metric.definition.get('schema_name') == exc.schema or obj is None or obj.get('kind') == 'view':
+                metric.state = 'stale'
+        session.commit()
+        raise HTTPException(503, detail={'code': 'source_unavailable', 'message': 'Source access or scope verification failed'}) from None
+    except (SourcePolicyError, SQLAlchemyError):
+        raise HTTPException(503, detail={'code': 'source_unavailable', 'message': 'Source access or scope verification failed'}) from None
     previous = session.scalar(select(SchemaSnapshot).where(SchemaSnapshot.connection_id == connection_id).order_by(SchemaSnapshot.captured_at.desc(), SchemaSnapshot.id.desc()).limit(1))
+    # Serialize with drafting and publication via the connection row lock.
+    # Staleness is persistent: restoring a schema later does not restore approval.
+    active = session.execute(select(MetricRevision, SchemaSnapshot.catalog)
+        .join(SchemaSnapshot, MetricRevision.snapshot_id == SchemaSnapshot.id)
+        .where(MetricRevision.connection_id == connection_id,
+               MetricRevision.state.in_(['draft', 'in_review', 'ready']))).all()
+    for metric, reviewed_catalog in active:
+        if source_changed(metric.definition, reviewed_catalog, catalog):
+            metric.state = 'stale'
     snapshot = SchemaSnapshot(connection_id=connection_id, fingerprint=fingerprint, catalog=catalog)
     session.add(snapshot)
     session.commit()

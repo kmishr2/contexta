@@ -14,6 +14,12 @@ class SourcePolicyError(Exception):
     pass
 
 
+class ScopeAccessError(SourcePolicyError):
+    def __init__(self, schema: str):
+        self.schema = schema
+        super().__init__('A scoped schema is unavailable to the source role')
+
+
 def source_engine(record: ConnectionRecord, settings: Settings):
     if f"{record.host}:{record.port}" not in settings.allowed_destinations:
         raise SourcePolicyError("Destination is not approved")
@@ -46,7 +52,7 @@ def inspect_source(record: ConnectionRecord, settings: Settings, *, discover: bo
                 for schema in record.schemas:
                     allowed = conn.execute(text("SELECT COALESCE(has_schema_privilege(current_user, oid, 'USAGE'), false) FROM pg_namespace WHERE nspname = :schema"), {"schema": schema}).scalar_one_or_none()
                     if not allowed:
-                        raise SourcePolicyError("A scoped schema is unavailable to the source role")
+                        raise ScopeAccessError(schema)
                 if not discover:
                     return {"database": identity[0], "role": identity[1]}
                 inspector = inspect(conn)

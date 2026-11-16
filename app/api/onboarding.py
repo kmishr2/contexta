@@ -11,6 +11,7 @@ from app.api.connections import get_record, metadata_session, owner
 from app.catalog.models import ConnectionRecord, MetricRevision, SchemaSnapshot
 from app.core.settings import Settings
 from app.onboarding.metrics import Definition, ReferenceCheck, run_check, validate_definition
+from app.onboarding.drift import source_changed
 from app.onboarding.suggestions import suggest_sources
 from app.sources.postgres.discovery import SourcePolicyError
 
@@ -45,7 +46,7 @@ def revision_for(session, connection_id, metric_id, revision):
 def current_catalog(session, metric):
     latest = latest_snapshot(session, metric.connection_id)
     reviewed = session.get(SchemaSnapshot, metric.snapshot_id)
-    if latest.fingerprint != reviewed.fingerprint:
+    if source_changed(metric.definition, reviewed.catalog, latest.catalog):
         fail('stale_definition', 'Catalog changed; save and verify a new draft')
     return latest
 
@@ -124,7 +125,7 @@ def list_revisions(connection_id: uuid.UUID, session: Annotated[Session, Depends
     get_record(session, connection_id)
     snapshot = latest_snapshot(session, connection_id)
     rows = session.execute(
-        select(MetricRevision, SchemaSnapshot.fingerprint)
+        select(MetricRevision, SchemaSnapshot.catalog)
         .join(SchemaSnapshot, MetricRevision.snapshot_id == SchemaSnapshot.id)
         .where(MetricRevision.connection_id == connection_id)
         .order_by(MetricRevision.metric_id, MetricRevision.revision.desc())
@@ -133,8 +134,8 @@ def list_revisions(connection_id: uuid.UUID, session: Annotated[Session, Depends
     return {'revisions': [
         {'metric_id': metric.metric_id, 'revision': metric.revision,
          'name': metric.definition.get('name', metric.metric_id),
-         'state': 'stale' if metric.state in ('draft', 'in_review', 'ready') and fingerprint != snapshot.fingerprint else metric.state}
-        for metric, fingerprint in rows[:500]], 'truncated': len(rows) > 500}
+         'state': 'stale' if metric.state in ('draft', 'in_review', 'ready') and source_changed(metric.definition, reviewed_catalog, snapshot.catalog) else metric.state}
+        for metric, reviewed_catalog in rows[:500]], 'truncated': len(rows) > 500}
 
 
 @router.get('/connections/{connection_id}/metrics/{metric_id}/revisions/{revision}')
@@ -143,4 +144,4 @@ def review(connection_id: uuid.UUID, metric_id: str, revision: int, session: Ann
     metric = revision_for(session, connection_id, metric_id, revision)
     latest = latest_snapshot(session, connection_id)
     reviewed = session.get(SchemaSnapshot, metric.snapshot_id)
-    return {'metric_id': metric_id, 'revision': metric.revision, 'state': 'stale' if metric.state in ('draft', 'in_review', 'ready') and latest.fingerprint != reviewed.fingerprint else metric.state, 'definition': metric.definition, 'check': metric.check_result}
+    return {'metric_id': metric_id, 'revision': metric.revision, 'state': 'stale' if metric.state in ('draft', 'in_review', 'ready') and source_changed(metric.definition, reviewed.catalog, latest.catalog) else metric.state, 'definition': metric.definition, 'check': metric.check_result}
