@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -33,3 +33,17 @@ class SchemaSnapshot(Base):
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     catalog: Mapped[dict] = mapped_column(JSONB, nullable=False)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False)
+
+
+class MetricRevision(Base):
+    __tablename__ = "metric_revisions"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    connection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("connections.id", ondelete="CASCADE"), nullable=False, index=True)
+    metric_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("schema_snapshots.id"), nullable=False)
+    definition: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    check_result: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False)
+    __table_args__ = (UniqueConstraint("connection_id", "metric_id", "revision"),)

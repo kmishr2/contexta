@@ -6,6 +6,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.connections import router as connections_router
 from app.api.health import router as health_router
+from app.api.onboarding import router as onboarding_router
 from app.core.settings import Settings
 
 
@@ -15,6 +16,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.settings = settings
     application.include_router(health_router)
     application.include_router(connections_router)
+    application.include_router(onboarding_router)
 
     @application.middleware("http")
     async def request_id(request: Request, call_next):
