@@ -43,7 +43,7 @@ def test_ai_proposal_preview_confirmation_and_revalidation(monkeypatch):
         assert client.post(base + '/metrics/revenue/publish', json={'revision': 1}).status_code == 200
         chat = client.post(base + '/chats').json()['id']
         ask = lambda msg: client.post(f'/chats/{chat}/messages', json={'message': msg})
-        pending = ask('How much was January revenue?').json()
+        pending = ask('How much was January 2025 revenue?').json()
         assert pending['type'] == 'proposal' and pending['metric']['definition']['filter_value'] == 'USD'
         engine = create_engine(META)
         with engine.connect() as conn:
@@ -52,21 +52,21 @@ def test_ai_proposal_preview_confirmation_and_revalidation(monkeypatch):
         result = ask('confirm').json()
         assert result['type'] == 'answer' and result['rows'] == [['100.00']]
         assert ask('confirm').json()['type'] == 'clarification'
-        assert ask('try again').json()['type'] == 'proposal'
+        assert ask('revenue from 2025-01-01 to 2025-02-01').json()['type'] == 'proposal'
         assert client.post(base + '/discover').status_code == 200
         assert ask('confirm').json()['type'] == 'clarification'
-        assert ask('try again').json()['type'] == 'proposal'
+        assert ask('revenue from 2025-01-01 to 2025-02-01').json()['type'] == 'proposal'
         def unsupported(system, payload, response_model):
             return ChatPlan(kind='query', message='group', metric_id='revenue', period='last_month', dimensions=['product'])
         monkeypatch.setattr('app.api.chats.structured', unsupported)
-        assert ask('by product').json()['type'] == 'unsupported'
+        assert ask('revenue by product last month').json()['type'] == 'unsupported'
         assert ask('confirm').json()['type'] == 'clarification'
         def invalid_metric(system, payload, response_model):
             return ChatPlan(kind='query', message='bad metric', metric_id='other_connection', period='last_month')
         monkeypatch.setattr('app.api.chats.structured', invalid_metric)
         assert ask('another').json()['type'] == 'unsupported'
         monkeypatch.setattr('app.api.chats.structured', plan_model)
-        assert ask('try again').json()['type'] == 'proposal'
+        assert ask('revenue from 2025-01-01 to 2025-02-01').json()['type'] == 'proposal'
         def offline(*args):
             raise LocalModelError('sensitive detail')
         monkeypatch.setattr('app.api.chats.structured', offline)
@@ -77,13 +77,17 @@ def test_ai_proposal_preview_confirmation_and_revalidation(monkeypatch):
         from app.sources.postgres.discovery import SourcePolicyError
         from app.analytics.execute import execute_metric
         monkeypatch.setattr('app.api.chats.structured', plan_model)
-        assert ask('again').json()['type'] == 'proposal'
+        assert ask('revenue from 2025-01-01 to 2025-02-01').json()['type'] == 'proposal'
         def broken_source(*args):
             raise SourcePolicyError('private details')
         monkeypatch.setattr('app.api.chats.execute_metric', broken_source)
         failed = ask('confirm')
         assert failed.status_code == 503 and 'private details' not in failed.text
         monkeypatch.setattr('app.api.chats.execute_metric', execute_metric)
+        assert ask('confirm').json()['type'] == 'clarification'
+        # A model-selected unrelated metric must not become a proposal.
+        monkeypatch.setattr('app.api.chats.structured', plan_model)
+        assert ask('What was product churn?').json()['type'] == 'clarification'
         assert ask('confirm').json()['type'] == 'clarification'
         def wrong_source(system, payload, response_model):
             return DraftProposal(kind='proposal', message='bad', definition=Definition(**{**definition, 'relation': 'not_in_catalog'}))

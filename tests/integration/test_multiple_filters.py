@@ -52,7 +52,7 @@ def test_multiple_fixed_filters_are_shared_by_check_and_chat(monkeypatch):
             monkeypatch.setattr('app.api.chats.structured', planner)
             with TestClient(create_app(settings.model_copy(update={'local_ai_chat': True}))) as ai_client:
                 ai_chat = ai_client.post(base + '/chats').json()['id']
-                assert ai_client.post(f'/chats/{ai_chat}/messages', json={'message': 'eligible by status'}).json()['type'] == 'proposal'
+                assert ai_client.post(f'/chats/{ai_chat}/messages', json={'message': 'eligible by status from 2025-01-01 to 2025-02-01'}).json()['type'] == 'proposal'
                 grouped = ai_client.post(f'/chats/{ai_chat}/messages', json={'message': 'confirm'}).json()
                 assert grouped['rows'] == [['captured', '100'], ['settled', '20']]
 

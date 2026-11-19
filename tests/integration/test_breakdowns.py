@@ -40,13 +40,13 @@ def test_verified_breakdown_followup_and_bounds(monkeypatch):
             assert client.get(metric + '/revisions/1').json()['dimension_checks']['region']['passed']
             assert client.post(metric + '/verify-dimension', json=reference).status_code == 409
             def planner(system, payload, response_model):
-                assert payload['metrics'][0]['dimensions'] == ['region']
                 dims = ['region'] if 'region' in payload['question'] else []
+                assert payload['metrics'][0]['dimensions'] == dims
                 return ChatPlan(kind='query', message='proposed', metric_id='sales', period='explicit', start=date(2025,1,1), end=date(2025,2,1), dimensions=dims)
             monkeypatch.setattr('app.api.chats.structured', planner)
             chat = client.post(base + '/chats').json()['id']
             ask = lambda q: client.post(f'/chats/{chat}/messages', json={'message': q})
-            assert ask('sales overall').json()['type'] == 'proposal'
+            assert ask('sales overall from 2025-01-01 to 2025-02-01').json()['type'] == 'proposal'
             assert ask('confirm').json()['rows'] == [['30']]
             proposal = ask('and by region?').json()
             assert proposal['dimensions'] == ['region']
@@ -57,11 +57,11 @@ def test_verified_breakdown_followup_and_bounds(monkeypatch):
             def bad(system, payload, response_model):
                 return ChatPlan(kind='query', message='bad', metric_id='sales', period='last_month', dimensions=['amount'])
             monkeypatch.setattr('app.api.chats.structured', bad)
-            assert ask('by amount').json()['type'] == 'unsupported'
+            assert ask('sales by amount last month').json()['type'] == 'unsupported'
             monkeypatch.setattr('app.api.chats.structured', planner)
             with admin.begin() as conn:
                 conn.execute(text("INSERT INTO sales.breakdown_test SELECT '2025-01-03'::date, 'R' || n::text, 1 FROM generate_series(1, 101) AS n"))
-            assert ask('by region').json()['type'] == 'proposal'
+            assert ask('sales by region from 2025-01-01 to 2025-02-01').json()['type'] == 'proposal'
             capped = ask('confirm').json()
             assert capped['truncated'] is True and capped['row_count'] == 100
             assert client.put(metric + '/draft', json=definition).status_code == 201

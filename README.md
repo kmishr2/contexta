@@ -107,7 +107,7 @@ from 2025-02-01 to 2025-03-01
 
 Dates are half-open: the start is included and the end excluded. The second form asks for dates; the third uses that pending metric or the previous successful metric in the same chat. Only ready, non-stale metrics for the chat's connection are queried. Results include the metric revision, dates, data status and SQL with bound values omitted. Sums with no rows return null; counts can return zero and are labeled `no_matching_rows`. A source with rows but no non-null values is labeled `missing_values`; partial nulls are labeled `partial_values`. A ratio with a zero denominator returns null and `zero_denominator` rather than zero.
 
-“Last month” means the previous calendar month in the deployment-wide `CONTEXA_REPORTING_TIMEZONE` (an IANA time zone, default `UTC`), using the server clock. Effective dates and time zone are returned and stored with the intent. Metric names must match exactly, ignoring case; ambiguous names require an explicit ID. Other relative periods, multi-dimension breakdowns, multiple metrics, production identity and subject-area permissions are not implemented. This remains a limited local prototype, not a general natural-language interface. An owner must have already checked currency, filters and source meaning. Analyst chats can be reopened from the connection-scoped chat selector; the most recent 50 exchanges (up to 512 KiB total) are returned, and each chat accepts up to 200 exchanges. Messages, displayed aggregate results, metric definitions and sanitized SQL are stored in the metadata database; raw source rows are not stored. Query intents and metric/snapshot versions are stored for provenance. Deleting a chat permanently deletes its messages, stored results, and associated query-run records. Existing local setups need `alembic upgrade head` before using chat. Continue to use disposable data only.
+“Last month” means the previous calendar month in the deployment-wide `CONTEXA_REPORTING_TIMEZONE` (an IANA time zone, default `UTC`), using the server clock. Effective dates and time zone are returned and stored with the intent. Metric names must match exactly, ignoring case; ambiguous names require an explicit ID. In deterministic mode, other relative periods are not implemented. Multi-dimension breakdowns, multiple metrics, production identity and subject-area permissions are not implemented. This remains a limited local prototype, not a general natural-language interface. An owner must have already checked currency, filters and source meaning. Analyst chats can be reopened from the connection-scoped chat selector; the most recent 50 exchanges (up to 512 KiB total) are returned, and each chat accepts up to 200 exchanges. Messages, displayed aggregate results, metric definitions and sanitized SQL are stored in the metadata database; raw source rows are not stored. Query intents and metric/snapshot versions are stored for provenance. Deleting a chat permanently deletes its messages, stored results, and associated query-run records. Existing local setups need `alembic upgrade head` before using chat. Continue to use disposable data only.
 
 
 ## Optional local AI for onboarding
@@ -198,3 +198,50 @@ Legacy chats and onboarding conversations are assigned to `development-owner` by
 A metric draft can include up to ten fixed filters, combined with **AND**. Supported conditions are equality, membership in a list of up to 50 values, `IS NULL`, and `IS NOT NULL`. Filter columns must belong to the approved source. Equality and membership support text, character, integer, decimal, boolean, date, and UUID columns; values are validated and bound using the catalog column type. Owners must still review the business meaning and verify the result. Filters are part of the metric definition, not arbitrary filters supplied by an analyst at query time.
 
 For example, a captured USD payment metric can use `status IN (captured, settled)` and `currency = USD` together. Existing metrics with the earlier single `filter_column` / `filter_value` fields remain readable and executable. Saving an edited draft from the UI creates a new revision using the new representation; old published revisions are not rewritten.
+
+
+## Fixture evaluation
+
+The benchmark onboards both synthetic fixtures through the API, checks overall values, a follow-up and a verified breakdown, and tests how the interpreter handles unavailable requests. The fake mode tests the workflow; it is not a measure of model accuracy. The optional local mode tests the installed model on the same seven cases. It reports each outcome, plan match, execution success, latency, and summary counts as JSON. Model token usage is not currently reported. This small benchmark is a regression check, not evidence of general accuracy.
+
+Use **only a fresh disposable cluster** with the commerce and subscriptions fixtures described above. The benchmark creates and removes its own app metadata records; it refuses a metadata target other than loopback port 55439 and database `contexta_meta_test`. Create that database, migrate it, then run:
+
+```sh
+POSTGRES_PORT=55439 docker compose exec postgres createdb -U contexta contexta_meta_test
+export CONTEXA_METADATA_URL='postgresql+psycopg://contexta:local-development-only@127.0.0.1:55439/contexta_meta_test'
+alembic upgrade head
+export CONTEXA_EVAL_METADATA_URL="$CONTEXA_METADATA_URL"
+python -m scripts.evaluate --disposable --mode fake
+# With Ollama running locally and cloud features disabled:
+python -m scripts.evaluate --disposable --mode local
+```
+
+The `--disposable` flag is required. The benchmark uses the documented fixture usernames and passwords and never confirms an unexpected model plan. It returns a nonzero exit status when any case fails. Cleanup normally runs even on errors; an abrupt process termination may leave evaluation records in the disposable database.
+
+Local-model chat uses a conservative metric-name grounding check and may ask for clarification when a synonym does not match. Exact verified-dimension follow-ups can reuse the previous accepted metric and dates without asking the model to infer them again. All proposed queries still require confirmation.
+
+If a question needs clarification, Contexta retains up to four clarification exchanges in the chat so a short answer can complete the request, including after reopening the chat. It accepts a published metric name or ID, a month and year, a calendar year, `Q1 2025`-style quarters, `last week`, `last month`, `last quarter`, `last year`, or explicit start and exclusive end dates as a clarification answer. Other conditions must be restated as a complete question, and extra query-time filters are not supported. Contexta calculates calendar windows and checks the dates proposed by the model against the user's request; an invented date range triggers another question. Last week runs Monday through Sunday, and last quarter is the previous calendar quarter. Relative periods use the configured reporting time zone. Comparisons use the explicit syntax below. Run `alembic upgrade head` to add clarification storage to an existing installation.
+
+Results include a deterministic explanation and the effective date range, reporting period, breakdown and fixed-filter count. Missing values, zero denominators, no matching rows and truncated breakdowns are called out separately. Analysts see a generic fixed-filter note; owners can inspect the approved definition. These descriptions explain the query that ran and do not replace review of the metric's business meaning.
+
+### Comparing two periods
+
+In local AI chat mode, use the metric ID and put the baseline first, for example `compare metric orders January 2025 with February 2025`, or `compare metric orders Q1 2024 with Q1 2025`. Calendar years and explicit windows (`from 2025-01-01 to 2025-02-01`) also work. Explicit end dates are exclusive. Review both periods and confirm before either query runs. Comparison requests with extra filters, breakdowns, relative periods or additional metrics are not supported.
+
+Both values are read from the same read-only, repeatable database snapshot and use the same published metric revision and fixed filters. The result includes the absolute difference and percentage change, calculated as `(current - baseline) / abs(baseline) * 100`, rounded to two decimal places. If the baseline is zero, percentage change is undefined. Contexta does not calculate a change if either period has missing, partial, non-finite or no matching data; it shows the status of each period instead. Each query is recorded separately in the chat provenance. A comparison does not become the context for a later follow-up.
+
+### Monthly trends
+
+In local AI chat mode, use `trend metric orders 2025 by month`, or specify a half-open range such as `trend metric orders from 2025-01-01 to 2025-04-01 by month`. The start and exclusive end must both be the first of a month; a trend contains at most 12 months. Review the metric revision, dates and month count, then confirm to run it. Extra filters, breakdowns and other granularities are not supported.
+
+Each monthly value uses the same published definition and is read in the same repeatable, read-only database snapshot. Contexta shows every month and its data status, including months with no matching rows; it does not silently replace missing aggregate values with zero. Each period has a separate query-run record. A trend does not become the context for a later follow-up. Up to 12 source queries are executed per confirmed trend, each subject to the existing statement timeout.
+
+### Building and exporting questions
+
+The **Build a question** control lists the selected connection's published metrics and constructs a single-value, comparison or monthly-trend question from dates you choose. It places the question in chat for review; press **Send** to submit it. Comparisons and trends still require local AI chat mode and a separate confirmation before execution. The end date or end month is excluded.
+
+Answers, comparisons and trends have a **Download CSV** button. The file includes the metric and revision, date windows, values, data statuses and query-run IDs. Grouped answers also include the dimension, null marker and truncation flag; comparison files identify baseline and current periods and report the change. Only the information visible in the result is exported, not SQL or hidden filter values. To prevent spreadsheet formula interpretation, text fields beginning with formula-like characters are prefixed with an apostrophe. Downloads are created locally in the browser and remain on the user's device after chat deletion.
+
+Monthly trends also show an approximate line chart when at least two values can be plotted safely. Missing or non-plottable values appear as gaps; use the table or CSV for exact values and data status. The visual scale follows the plotted minimum and maximum rather than always starting at zero.
+
+Run the result interface checks with `node --test tests/web/results.test.cjs`. These exercise question construction, CSV safety, chart gaps and the result-rendering logic without requiring a browser.

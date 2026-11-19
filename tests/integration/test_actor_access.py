@@ -79,10 +79,20 @@ def test_owner_analysts_grants_and_private_chats(monkeypatch):
     monkeypatch.setattr('app.api.chats.structured', planner)
     with TestClient(create_app(settings.model_copy(update={'local_ai_chat': True}))) as client:
         ai_chat = client.post(base + '/chats', headers=headers('alice')).json()['id']
-        preview = client.post(f'/chats/{ai_chat}/messages', json={'message': 'How many orders?'}, headers=headers('alice')).json()
+        preview = client.post(f'/chats/{ai_chat}/messages', json={'message': 'How many orders from 2025-01-01 to 2025-02-01?'}, headers=headers('alice')).json()
         assert preview['type'] == 'proposal' and preview['metric']['definition'] == {'name': 'Orders'}
         answer = client.post(f'/chats/{ai_chat}/messages', json={'message': 'confirm'}, headers=headers('alice')).json()
         assert answer['rows'] == [['2']] and 'sql' not in answer
+        comparison = {'message': 'compare metric orders January 2025 with February 2025'}
+        preview = client.post(f'/chats/{ai_chat}/messages', json=comparison, headers=headers('alice')).json()
+        assert preview['type'] == 'comparison_proposal' and preview['metric']['definition'] == {'name': 'Orders'}
+        result = client.post(f'/chats/{ai_chat}/messages', json={'message': 'confirm'}, headers=headers('alice')).json()
+        assert result['type'] == 'comparison' and result['metric']['definition'] == {'name': 'Orders'}
+        assert result['change']['reason'] == 'incomplete_data' and 'sql' not in result
+        preview = client.post(f'/chats/{ai_chat}/messages', json={'message': 'trend metric orders from 2025-01-01 to 2025-03-01 by month'}, headers=headers('alice')).json()
+        assert preview['type'] == 'trend_proposal' and preview['metric']['definition'] == {'name': 'Orders'}
+        result = client.post(f'/chats/{ai_chat}/messages', json={'message': 'confirm'}, headers=headers('alice')).json()
+        assert result['type'] == 'trend' and result['metric']['definition'] == {'name': 'Orders'} and 'sql' not in result
     # A role change re-applies visibility to previously stored owner responses.
     demoted = [dict(item) for item in identities]
     demoted[0] = {**demoted[0], 'role': 'analyst', 'connections': [first]}

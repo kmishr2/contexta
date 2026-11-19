@@ -30,6 +30,25 @@ class ChatPlan(BaseModel):
     dimensions: list[str] = Field(default_factory=list, max_length=10)
     filters: list[str] = Field(default_factory=list, max_length=10)
 
+    @classmethod
+    def model_json_schema(cls, *args, **kwargs):
+        # Encode the cross-field contract in the grammar as well as in Pydantic.
+        # Otherwise smaller local models can emit kind=query with null query fields.
+        def branch(kind, period=None):
+            query = kind == 'query'
+            props = {
+                'kind': {'const': kind},
+                'message': {'type': 'string', 'minLength': 1, 'maxLength': 500},
+                'metric_id': {'type': 'string', 'minLength': 1, 'maxLength': 80} if query else {'type': 'null'},
+                'period': {'const': period} if query else {'type': 'null'},
+                'start': {'type': 'string', 'format': 'date'} if period == 'explicit' else {'type': 'null'},
+                'end': {'type': 'string', 'format': 'date'} if period == 'explicit' else {'type': 'null'},
+                'dimensions': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 10 if query else 0},
+                'filters': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 10 if query else 0},
+            }
+            return {'type': 'object', 'properties': props, 'required': list(props), 'additionalProperties': False}
+        return {'oneOf': [branch('query', 'explicit'), branch('query', 'last_month'), branch('clarify'), branch('unsupported')]}
+
     @model_validator(mode='after')
     def shape(self):
         if self.kind == 'query':

@@ -68,6 +68,11 @@ def test_real_local_model_onboarding_and_chat_end_to_end(monkeypatch):
         assert followup2.status_code == 200 and followup2.json()['type'] == 'proposal', followup2.text
         assert followup2.json()['date_scope']['start'] == '2025-01-01'
         assert client.post(f'/chats/{chat}/messages', json={'message': 'confirm'}).json()['rows'] == [['101', '1'], ['102', '1']]
+        quarter = client.post(f'/chats/{chat}/messages', json={'message': 'How many orders in Q1 2025?'})
+        assert quarter.status_code == 200 and quarter.json()['type'] == 'proposal', quarter.text
+        assert quarter.json()['date_scope']['start'] == '2025-01-01'
+        assert quarter.json()['date_scope']['end_exclusive'] == '2025-04-01'
+        assert client.post(f'/chats/{chat}/messages', json={'message': 'confirm'}).json()['rows'] == [['2']]
         unsupported = client.post(f'/chats/{chat}/messages', json={'message': 'Show orders by region last month.'})
         assert unsupported.status_code == 200 and unsupported.json()['type'] in {'unsupported', 'clarification'}, unsupported.text
 

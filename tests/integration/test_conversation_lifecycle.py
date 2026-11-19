@@ -41,13 +41,13 @@ def test_history_restore_delete_and_connection_isolation(monkeypatch):
         chat = client.post(base + '/chats').json()['id']
         assert client.get(other_base + '/chats/' + chat).status_code == 404
         assert client.delete(other_base + '/chats/' + chat).status_code == 404
-        assert client.post(f'/chats/{chat}/messages', json={'message': 'How many orders?'}).json()['type'] == 'proposal'
+        assert client.post(f'/chats/{chat}/messages', json={'message': 'How many orders from 2025-01-01 to 2025-02-01?'}).json()['type'] == 'proposal'
         preview = client.get(base + '/chats/' + chat).json()
         assert preview['pending_confirmation'] and preview['turns'][0]['response']['type'] == 'proposal'
         assert client.post(f'/chats/{chat}/messages', json={'message': 'confirm'}).json()['rows'] == [['2']]
         restored = client.get(base + '/chats/' + chat).json()
         assert not restored['pending_confirmation']
-        assert [turn['message'] for turn in restored['turns']] == ['How many orders?', 'confirm']
+        assert [turn['message'] for turn in restored['turns']] == ['How many orders from 2025-01-01 to 2025-02-01?', 'confirm']
         assert restored['turns'][1]['response']['rows'] == [['2']]
         assert client.get(base + '/chats').json()[0]['id'] == chat
         assert not client.get(other_base + '/chats').json()

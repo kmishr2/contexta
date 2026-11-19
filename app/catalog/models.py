@@ -58,6 +58,7 @@ class Chat(Base):
     last_intent: Mapped[dict | None] = mapped_column(JSONB)
     pending_metric: Mapped[str | None] = mapped_column(String(80))
     pending_plan: Mapped[dict | None] = mapped_column(JSONB)
+    pending_clarification: Mapped[list | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False)
 
 
