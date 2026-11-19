@@ -73,6 +73,18 @@ def test_ai_proposal_preview_confirmation_and_revalidation(monkeypatch):
         failure = ask('retry')
         assert failure.status_code == 503 and 'sensitive' not in failure.text
         assert ask('confirm').json()['type'] == 'clarification'
+        # An execution failure consumes a previously confirmed plan.
+        from app.sources.postgres.discovery import SourcePolicyError
+        from app.analytics.execute import execute_metric
+        monkeypatch.setattr('app.api.chats.structured', plan_model)
+        assert ask('again').json()['type'] == 'proposal'
+        def broken_source(*args):
+            raise SourcePolicyError('private details')
+        monkeypatch.setattr('app.api.chats.execute_metric', broken_source)
+        failed = ask('confirm')
+        assert failed.status_code == 503 and 'private details' not in failed.text
+        monkeypatch.setattr('app.api.chats.execute_metric', execute_metric)
+        assert ask('confirm').json()['type'] == 'clarification'
         def wrong_source(system, payload, response_model):
             return DraftProposal(kind='proposal', message='bad', definition=Definition(**{**definition, 'relation': 'not_in_catalog'}))
         monkeypatch.setattr('app.api.onboarding.structured', wrong_source)

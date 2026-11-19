@@ -1,7 +1,8 @@
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import SecretStr, field_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from app.core.auth import IdentityConfig
 
 
 class Settings(BaseSettings):
@@ -10,6 +11,7 @@ class Settings(BaseSettings):
     app_name: str = "Contexta"
     # Explicit opt-in: this identity has full owner privileges and is local-only.
     development_owner: bool = False
+    identities: list[IdentityConfig] = []
     metadata_url: SecretStr | None = None
     # Entries are exact host:port pairs controlled by the operator.
     allowed_destinations: list[str] = []
@@ -29,3 +31,18 @@ class Settings(BaseSettings):
         except (ZoneInfoNotFoundError, ValueError):
             raise ValueError('reporting_timezone must be an IANA time zone') from None
         return value
+
+    @field_validator('identities')
+    @classmethod
+    def unique_identities(cls, identities: list[IdentityConfig]) -> list[IdentityConfig]:
+        ids = [item.id for item in identities]
+        digests = [item.token_sha256.get_secret_value() for item in identities]
+        if len(ids) != len(set(ids)) or len(digests) != len(set(digests)) or 'development-owner' in ids:
+            raise ValueError('Identity IDs and token digests must be unique and may not use the development identity ID')
+        return identities
+
+    @model_validator(mode='after')
+    def exclusive_auth_modes(self):
+        if self.development_owner and self.identities:
+            raise ValueError('Development owner and configured identities cannot be enabled together')
+        return self

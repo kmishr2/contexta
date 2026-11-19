@@ -54,6 +54,7 @@ class Chat(Base):
     __tablename__ = 'chats'
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     connection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('connections.id', ondelete='CASCADE'), nullable=False, index=True)
+    actor_id: Mapped[str] = mapped_column(String(80), nullable=False)
     last_intent: Mapped[dict | None] = mapped_column(JSONB)
     pending_metric: Mapped[str | None] = mapped_column(String(80))
     pending_plan: Mapped[dict | None] = mapped_column(JSONB)
@@ -68,4 +69,23 @@ class QueryRun(Base):
     snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('schema_snapshots.id'), nullable=False)
     intent: Mapped[dict] = mapped_column(JSONB, nullable=False)
     outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False)
+
+
+class OnboardingConversation(Base):
+    __tablename__ = 'onboarding_conversations'
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    connection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('connections.id', ondelete='CASCADE'), nullable=False, index=True)
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('schema_snapshots.id'), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    turns: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False)
+
+
+class ChatTurn(Base):
+    __tablename__ = 'chat_turns'
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chat_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('chats.id', ondelete='CASCADE'), nullable=False, index=True)
+    message: Mapped[str] = mapped_column(String(2000), nullable=False)
+    response: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False)

@@ -11,6 +11,7 @@ from sqlalchemy.pool import NullPool
 from app.catalog.models import ConnectionRecord, MetricRevision, SchemaSnapshot
 from app.onboarding.drift import source_changed
 from app.core.settings import Settings
+from app.core.auth import Actor, actor, require_connection, require_owner as owner
 from app.sources.postgres.discovery import ScopeAccessError, SourcePolicyError, inspect_source
 
 router = APIRouter()
@@ -33,14 +34,8 @@ class ConnectionInput(BaseModel):
         return sorted(value)
 
 
-def owner(request: Request) -> Settings:
+def metadata_session(request: Request, principal: Annotated[Actor, Depends(actor)]):
     settings = request.app.state.settings
-    if not settings.development_owner:
-        raise HTTPException(403, detail={"code": "access_denied", "message": "Development owner is not enabled"})
-    return settings
-
-
-def metadata_session(settings: Annotated[Settings, Depends(owner)]):
     if settings.metadata_url is None or not settings.metadata_url.get_secret_value().startswith("postgresql+psycopg://"):
         raise HTTPException(503, detail={"code": "metadata_unavailable", "message": "Metadata store is unavailable"})
     engine = create_engine(settings.metadata_url.get_secret_value(), poolclass=NullPool, hide_parameters=True, connect_args={"connect_timeout": 5})
@@ -66,9 +61,17 @@ def safe_source(record, settings, discover):
 
 
 @router.get("/connections")
-def list_connections(session: Annotated[Session, Depends(metadata_session)]):
-    records = session.scalars(select(ConnectionRecord).order_by(ConnectionRecord.label, ConnectionRecord.id)).all()
-    return [{"id": r.id, "label": r.label, "schemas": r.schemas} for r in records]
+def list_connections(session: Annotated[Session, Depends(metadata_session)], principal: Annotated[Actor, Depends(actor)]):
+    query = select(ConnectionRecord).order_by(ConnectionRecord.label, ConnectionRecord.id)
+    if principal.role != 'owner':
+        query = query.where(ConnectionRecord.id.in_(principal.connections))
+    records = session.scalars(query).all()
+    return [{"id": r.id, "label": r.label, **({"schemas": r.schemas} if principal.role == 'owner' else {})} for r in records]
+
+
+@router.get('/me')
+def current_identity(principal: Annotated[Actor, Depends(actor)]):
+    return {'id': principal.id, 'role': principal.role}
 
 
 @router.post("/connections", status_code=201)
@@ -125,9 +128,22 @@ def discover(connection_id: uuid.UUID, settings: Annotated[Settings, Depends(own
 
 
 @router.get("/connections/{connection_id}/catalog")
-def catalog(connection_id: uuid.UUID, session: Annotated[Session, Depends(metadata_session)]):
+def catalog(connection_id: uuid.UUID, session: Annotated[Session, Depends(metadata_session)], settings: Annotated[Settings, Depends(owner)]):
     get_record(session, connection_id)
     snapshot = session.scalar(select(SchemaSnapshot).where(SchemaSnapshot.connection_id == connection_id).order_by(SchemaSnapshot.captured_at.desc(), SchemaSnapshot.id.desc()).limit(1))
     if snapshot is None:
         raise HTTPException(404, detail={"code": "catalog_not_found", "message": "Connection has not been discovered"})
     return {"snapshot_id": snapshot.id, "fingerprint": snapshot.fingerprint, "catalog": snapshot.catalog}
+
+
+@router.get('/connections/{connection_id}/published-metrics')
+def published_metrics(connection_id: uuid.UUID, session: Annotated[Session, Depends(metadata_session)], principal: Annotated[Actor, Depends(actor)]):
+    require_connection(principal, connection_id)
+    get_record(session, connection_id)
+    snapshot = session.scalar(select(SchemaSnapshot).where(SchemaSnapshot.connection_id == connection_id).order_by(SchemaSnapshot.captured_at.desc(), SchemaSnapshot.id.desc()).limit(1))
+    if snapshot is None:
+        return []
+    rows = session.execute(select(MetricRevision, SchemaSnapshot.catalog).join(SchemaSnapshot, MetricRevision.snapshot_id == SchemaSnapshot.id).where(MetricRevision.connection_id == connection_id, MetricRevision.state == 'ready')).all()
+    return [{'id': metric.metric_id, 'revision': metric.revision, 'name': metric.definition['name'],
+             'dimensions': [d for d in metric.definition.get('dimensions', []) if (metric.dimension_checks or {}).get(d, {}).get('passed')]}
+            for metric, reviewed in rows if not source_changed(metric.definition, reviewed, snapshot.catalog)]

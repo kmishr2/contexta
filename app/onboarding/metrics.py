@@ -1,14 +1,38 @@
+import re
 from datetime import date
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from app.analytics.execute import execute_metric
+from app.analytics.filter_values import coerce_filter_value
 
 Aggregate = Literal['count', 'distinct_count', 'sum', 'avg']
 
 
+class FixedFilter(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    column: str = Field(min_length=1, max_length=128)
+    operator: Literal['eq', 'in', 'is_null', 'is_not_null']
+    values: list[str] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode='after')
+    def validate_values(self):
+        if any(len(value) > 256 for value in self.values):
+            raise ValueError('Filter values must be at most 256 characters')
+        if self.operator == 'eq' and len(self.values) != 1:
+            raise ValueError('Equality requires exactly one value')
+        if self.operator == 'in' and not self.values:
+            raise ValueError('In requires at least one value')
+        if self.operator in ('is_null', 'is_not_null') and self.values:
+            raise ValueError('Null checks cannot contain values')
+        if len(set(self.values)) != len(self.values):
+            raise ValueError('Filter values must be distinct')
+        return self
+
+
 class Definition(BaseModel):
+    _filter_types: dict[str, str] = PrivateAttr(default_factory=dict)
     name: str = Field(min_length=1, max_length=120)
     schema_name: str
     relation: str
@@ -20,6 +44,7 @@ class Definition(BaseModel):
     date_column: str
     filter_column: str | None = Field(default=None, min_length=1)
     filter_value: str | None = None
+    fixed_filters: list[FixedFilter] = Field(default_factory=list, max_length=10)
     dimensions: list[str] = Field(default_factory=list, max_length=30)
 
     @model_validator(mode='after')
@@ -37,9 +62,21 @@ class Definition(BaseModel):
                 raise ValueError('Count uses no column; other aggregates require a column')
         if (self.filter_column is None) != (self.filter_value is None):
             raise ValueError('A fixed filter needs both a column and value')
-        if 'currency' in self.dimensions and any(kind in ('sum', 'avg') for kind, _ in pairs) and self.filter_column != 'currency':
+        if self.filter_column and self.fixed_filters:
+            raise ValueError('Use either legacy filter fields or fixed_filters, not both')
+        columns = [item.column for item in self.fixed_filters]
+        if len(columns) != len(set(columns)):
+            raise ValueError('Each fixed filter must use a distinct column')
+        currency_fixed = self.filter_column == 'currency' or any(item.column == 'currency' and item.operator in ('eq', 'in') and len(item.values) == 1 for item in self.fixed_filters)
+        if 'currency' in self.dimensions and any(kind in ('sum', 'avg') for kind, _ in pairs) and not currency_fixed:
             raise ValueError('An amount with a currency dimension requires a fixed currency filter')
         return self
+
+    def effective_filters(self) -> list[FixedFilter]:
+        if self.filter_column is not None:
+            # Older persisted definitions may contain long values; keep them readable.
+            return [FixedFilter.model_construct(column=self.filter_column, operator='eq', values=[self.filter_value])]
+        return self.fixed_filters
 
 
 class ReferenceCheck(BaseModel):
@@ -72,8 +109,17 @@ def validate_definition(definition, catalog):
             raise ValueError('Aggregate column must be discovered')
         if col and kind in ('sum', 'avg') and not cols[col].startswith(('NUMERIC', 'DECIMAL', 'INTEGER', 'BIGINT', 'SMALLINT', 'REAL', 'DOUBLE PRECISION')):
             raise ValueError('Sum and average require numeric columns')
-    if definition.filter_column and definition.filter_column not in cols:
-        raise ValueError('Filter column must be discovered')
+    definition._filter_types = {}
+    for item in definition.effective_filters():
+        if item.column not in cols:
+            raise ValueError('Filter column must be discovered')
+        if item.operator in ('eq', 'in'):
+            supported = r'(?:VARCHAR(?:\(\d+\))?|CHAR(?:\(\d+\))?|TEXT|INTEGER|BIGINT|SMALLINT|NUMERIC(?:\(\d+(?:,\s*\d+)?\))?|DECIMAL(?:\(\d+(?:,\s*\d+)?\))?|BOOLEAN|DATE|UUID)'
+            if not re.fullmatch(supported, cols[item.column]):
+                raise ValueError('Filter type is not supported for equality or membership')
+            for value in item.values:
+                coerce_filter_value(value, cols[item.column])
+        definition._filter_types[item.column] = cols[item.column]
     if any(d not in cols for d in definition.dimensions) or len(set(definition.dimensions)) != len(definition.dimensions):
         raise ValueError('Dimensions must be distinct discovered columns')
     return obj

@@ -62,3 +62,11 @@ def test_chat_contract_rejects_unapproved_shapes():
         ChatPlan.model_validate({'kind': 'query', 'message': 'test', 'metric_id': 'revenue', 'period': 'explicit', 'start': '2025-02-01', 'end': '2025-01-01'})
     with pytest.raises(ValidationError):
         ChatPlan.model_validate({'kind': 'query', 'message': 'test', 'metric_id': 'revenue', 'period': 'last_month', 'sql': 'DROP TABLE accounts'})
+
+
+def test_context_budget_rejects_oversized_input_before_network(monkeypatch):
+    def forbidden(*args):
+        pytest.fail('oversized prompt must not reach the server')
+    monkeypatch.setattr(ollama, 'build_opener', forbidden)
+    with pytest.raises(ollama.LocalModelContextTooLarge):
+        ollama.suggest('x' * 20000, [])

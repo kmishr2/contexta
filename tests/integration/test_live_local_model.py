@@ -70,3 +70,29 @@ def test_real_local_model_onboarding_and_chat_end_to_end(monkeypatch):
         assert client.post(f'/chats/{chat}/messages', json={'message': 'confirm'}).json()['rows'] == [['101', '1'], ['102', '1']]
         unsupported = client.post(f'/chats/{chat}/messages', json={'message': 'Show orders by region last month.'})
         assert unsupported.status_code == 200 and unsupported.json()['type'] in {'unsupported', 'clarification'}, unsupported.text
+
+
+def test_real_model_multi_turn_onboarding(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.core.settings import Settings
+    from app.main import create_app
+    meta = os.getenv('CONTEXA_TEST_METADATA_URL')
+    if not meta or not os.getenv('CONTEXA_TEST_SOURCE_ADMIN_URL'):
+        pytest.skip('disposable PostgreSQL fixture not configured')
+    monkeypatch.setenv('CONTEXA_SOURCE_TEST', 'local-reader-only')
+    settings = Settings(development_owner=True, local_ai_onboarding=True, metadata_url=meta, allowed_destinations=['127.0.0.1:55439'], allow_insecure_local_sources=True)
+    source = {'label': 'Live dialogue', 'host': '127.0.0.1', 'port': 55439, 'database': 'contexta_source_test', 'username': 'contexta_reader', 'credential_ref': 'CONTEXA_SOURCE_TEST', 'schemas': ['sales']}
+    with TestClient(create_app(settings)) as client:
+        cid = client.post('/connections', json=source).json()['id']
+        base = f'/connections/{cid}'
+        assert client.post(base + '/discover').status_code == 200
+        first = client.post(base + '/onboarding/messages', json={'message': 'I want to count orders.'})
+        assert first.status_code == 200, first.text
+        conversation = first.json()['conversation_id']
+        second = client.post(base + '/onboarding/messages', json={'message': 'Count every row in sales.orders, use created_at, with no exclusions.', 'conversation_id': conversation})
+        assert second.status_code == 200 and second.json()['conversation_id'] == conversation, second.text
+        history = client.get(base + '/onboarding/conversations/' + conversation).json()['turns']
+        assert len(history) == 2 and history[0]['owner'] == 'I want to count orders.'
+        proposal = client.post(base + '/onboarding/propose', json={'message': 'Please propose the metric.', 'conversation_id': conversation})
+        assert proposal.status_code == 200, proposal.text
+        assert proposal.json()['kind'] in {'proposal', 'clarify', 'unsupported'}
